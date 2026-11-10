@@ -49,7 +49,9 @@ workspace.json
 tasks/<KEY>-<number>.json
     One file per task, also tasks in the trash (\"deleted\": true) and tasks of deleted
     projects: title, Markdown description, status, priority, dates, creator, assignees,
-    labels, relations, comments, attachments and activity (the task's audit events). A
+    labels, relations, comments, attachments and activity (the task's audit events).
+    \"recurrence\" is the task's repeat rule (FREQ=DAILY|WEEKLY|MONTHLY|YEARLY;INTERVAL=n)
+    or null, and \"recurrence_of\" the id of the earlier task of its series or null. A
     comment written with a service account's API token has \"author_service_account\"
     {\"id\", \"name\"} (else null); its \"author\" is the member the write was checked as.
 
@@ -659,7 +661,7 @@ async fn tasks(
         "SELECT tasks.id, tasks.number, projects.project_key, tasks.project_id, tasks.status_id, \
          task_statuses.name AS status_name, tasks.title, tasks.description, tasks.priority, \
          tasks.parent_task_id, tasks.creator_id, tasks.source_url, tasks.due_start_at, tasks.due_at, \
-         tasks.completed_at, tasks.deleted_at, tasks.created_at, tasks.updated_at \
+         tasks.recurrence, tasks.recurrence_of, tasks.completed_at, tasks.deleted_at, tasks.created_at, tasks.updated_at \
          FROM tasks JOIN projects ON projects.id = tasks.project_id \
          LEFT JOIN task_statuses ON task_statuses.id = tasks.status_id \
          WHERE tasks.workspace_id = $1 ORDER BY projects.project_key, tasks.number, tasks.id",
@@ -691,6 +693,8 @@ async fn tasks(
             "source_url": row.get::<Option<String>, _>("source_url"),
             "due_start_at": optional_time(row.get("due_start_at")),
             "due_at": optional_time(row.get("due_at")),
+            "recurrence": row.get::<Option<String>, _>("recurrence"),
+            "recurrence_of": row.get::<Option<String>, _>("recurrence_of"),
             "completed_at": optional_time(row.get("completed_at")),
             "deleted": row.get::<Option<i64>, _>("deleted_at").is_some(),
             "deleted_at": optional_time(row.get("deleted_at")),

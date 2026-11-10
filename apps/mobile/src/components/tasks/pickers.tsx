@@ -7,6 +7,7 @@ import { Platform, Pressable, View } from 'react-native'
 
 import type { Person } from '../../data/chat'
 import type { LabelRecord, StatusRecord, TaskRecord } from '../../data/orbit'
+import { RECURRENCE_CHOICES } from '../../data/recurrence'
 import {
   DEFAULT_DUE_TIME,
   dayAfter,
@@ -200,6 +201,18 @@ export function DueDateChoices({ dueAt, onChange }: { dueAt: string | null | und
       <SheetRow label="Pick a date…" icon="calendar" checked={picking} onPress={() => setPicking((value) => !value)} />
       {picking ? <DayPicker value={dueAt ? new Date(dueAt) : now} onPick={(day) => onChange(dueOn(day, time))} onCancel={() => setPicking(false)} /> : null}
       {dueAt ? <SheetRow label="No due date" icon="close" onPress={() => onChange(null)} /> : null}
+    </SheetList>
+  )
+}
+
+/** The web's Repeat menu: how often the task repeats, or Doesn't repeat. Completing a repeating task creates the next one. */
+export function RepeatChoices({ value, onSelect }: { value: string | null | undefined; onSelect: (rule: string | null) => void }) {
+  return (
+    <SheetList>
+      {RECURRENCE_CHOICES.map((choice) => (
+        <SheetRow key={choice.rule ?? 'none'} label={choice.label} icon={choice.rule ? 'repeat' : 'close'} checked={choice.rule === (value ?? null)} onPress={() => onSelect(choice.rule)} />
+      ))}
+      <SheetNote>Completing a repeating task creates the next one, with its due date moved ahead.</SheetNote>
     </SheetList>
   )
 }

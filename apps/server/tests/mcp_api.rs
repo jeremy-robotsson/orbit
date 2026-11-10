@@ -168,6 +168,7 @@ async fn create_task(
                 due_start_at: None,
                 due_at: None,
                 parent_task_id: None,
+                recurrence: None,
             },
             "test",
             TimestampMillis::now(),
@@ -995,6 +996,59 @@ async fn agents_can_claim_unassign_and_comment_within_the_grant() {
             .await
             .unwrap();
     assert_eq!(secret_comments, 0);
+}
+
+#[tokio::test]
+async fn agents_can_make_a_task_repeat_and_stop_it() {
+    let f = Fixture::new().await;
+    sqlx::query("UPDATE api_tokens SET scopes = 'tasks:read tasks:write' WHERE id = $1")
+        .bind(f.token_id.to_string())
+        .execute(f.database.pool())
+        .await
+        .unwrap();
+    let tools = f.rpc("tools/list", json!({})).await;
+    let create = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "create_task")
+        .unwrap_or_else(|| panic!("{tools}"));
+    assert!(
+        create["inputSchema"]["properties"]["recurrence"].is_object(),
+        "{create}"
+    );
+    let current = f.tasks.get_task(f.workspace, f.task, f.user).await.unwrap();
+    let repeating = f
+        .tool(
+            "update_task",
+            json!({"task_id": f.task, "expected_version": token_version(&current), "recurrence": "FREQ=MONTHLY;INTERVAL=3"}),
+        )
+        .await;
+    let repeating = &repeating["result"]["structuredContent"];
+    assert_eq!(
+        repeating["recurrence"], "FREQ=MONTHLY;INTERVAL=3",
+        "{repeating}"
+    );
+    let invalid = f
+        .tool(
+            "update_task",
+            json!({"task_id": f.task, "expected_version": repeating["version"], "recurrence": "every monday"}),
+        )
+        .await;
+    // Invalid input is an invalid-params error, like an invalid priority.
+    assert_eq!(invalid["error"]["code"], -32602, "{invalid}");
+    assert!(invalid.to_string().contains("FREQ="), "{invalid}");
+    let stopped = f
+        .tool(
+            "update_task",
+            json!({"task_id": f.task, "expected_version": repeating["version"], "recurrence": null}),
+        )
+        .await;
+    assert_eq!(
+        stopped["result"]["structuredContent"]["recurrence"],
+        Value::Null,
+        "{stopped}"
+    );
 }
 
 #[tokio::test]

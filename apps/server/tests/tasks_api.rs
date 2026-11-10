@@ -4211,6 +4211,7 @@ fn filter_task(project: Id, status: Id, title: &str) -> CreateTask {
         due_start_at: None,
         due_at: None,
         parent_task_id: None,
+        recurrence: None,
     }
 }
 
@@ -7412,5 +7413,342 @@ async fn task_lists_leave_out_description_json() {
     assert_eq!(
         response_json(single).await["description_json"][0]["content"][0]["text"],
         "Hi"
+    );
+}
+
+async fn status_of_category(fixture: &Fixture, category: &str) -> String {
+    sqlx::query_scalar(
+        "SELECT id FROM task_statuses WHERE project_id = $1 AND category = $2 ORDER BY position LIMIT 1",
+    )
+    .bind(&fixture.project_id)
+    .bind(category)
+    .fetch_one(fixture.database.pool())
+    .await
+    .unwrap()
+}
+
+async fn patch_task(fixture: &Fixture, id: &Value, body: Value) -> axum::response::Response {
+    fixture
+        .app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!(
+                "/api/v1/workspaces/{}/tasks/{}",
+                fixture.workspace_id,
+                id.as_str().unwrap()
+            ),
+            &fixture.owner_cookie,
+            body,
+        ))
+        .await
+        .unwrap()
+}
+
+async fn tasks_titled(fixture: &Fixture, title: &str) -> Vec<String> {
+    sqlx::query_scalar("SELECT id FROM tasks WHERE workspace_id = $1 AND title = $2 ORDER BY id")
+        .bind(&fixture.workspace_id)
+        .bind(title)
+        .fetch_all(fixture.database.pool())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn completing_a_recurring_task_creates_the_next_occurrence_once() {
+    let fixture = Fixture::new().await;
+    let done = status_of_category(&fixture, "completed").await;
+    // Not the project's first unstarted status (Backlog): the next occurrence returns to it.
+    let todo: String =
+        sqlx::query_scalar("SELECT id FROM task_statuses WHERE project_id = $1 AND name = 'Todo'")
+            .bind(&fixture.project_id)
+            .fetch_one(fixture.database.pool())
+            .await
+            .unwrap();
+    assert_ne!(todo, status_of_category(&fixture, "unstarted").await);
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/workspaces/{}/tasks", fixture.workspace_id),
+            &fixture.owner_cookie,
+            json!({
+                "project_id": fixture.project_id,
+                "status_id": todo,
+                "title": "Take out the bins",
+                "description": "Green bin **and** blue bin",
+                "priority": "high",
+                "assignee_ids": [fixture.owner_id.to_string()],
+                "due_start_at": "2099-01-04T09:00:00Z",
+                "due_at": "2099-01-05T09:00:00Z",
+                "recurrence": "freq=weekly"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let first = response_json(response).await;
+    assert_eq!(first["recurrence"], "FREQ=WEEKLY;INTERVAL=1");
+    assert!(first["recurrence_of"].is_null());
+
+    let response = patch_task(
+        &fixture,
+        &first["id"],
+        json!({"expected_version": 0, "status_id": done}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let completed = response_json(response).await;
+    assert!(completed["recurrence"].is_null(), "the rule moves on");
+    assert_eq!(completed["status_id"], done.as_str());
+
+    let ids = tasks_titled(&fixture, "Take out the bins").await;
+    assert_eq!(ids.len(), 2);
+    let next_id = ids.iter().find(|id| **id != first["id"]).unwrap();
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(cookie_request(
+            "GET",
+            &format!(
+                "/api/v1/workspaces/{}/tasks/{next_id}",
+                fixture.workspace_id
+            ),
+            &fixture.owner_cookie,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let next = response_json(response).await;
+    assert_eq!(next["status_id"], todo.as_str());
+    assert_eq!(next["recurrence"], "FREQ=WEEKLY;INTERVAL=1");
+    assert_eq!(next["recurrence_of"], first["id"]);
+    assert_eq!(next["due_start_at"], "2099-01-11T09:00:00.000Z");
+    assert_eq!(next["due_at"], "2099-01-12T09:00:00.000Z");
+    assert_eq!(next["priority"], "high");
+    assert_eq!(next["assignee_ids"], json!([fixture.owner_id.to_string()]));
+    assert!(next["description"].as_str().unwrap().contains("blue bin"));
+
+    // Reopening and completing the old occurrence again makes no second copy.
+    let reopened = patch_task(
+        &fixture,
+        &first["id"],
+        json!({"expected_version": completed["version"], "status_id": todo}),
+    )
+    .await;
+    assert_eq!(reopened.status(), StatusCode::OK);
+    let reopened = response_json(reopened).await;
+    let again = patch_task(
+        &fixture,
+        &first["id"],
+        json!({"expected_version": reopened["version"], "status_id": done}),
+    )
+    .await;
+    assert_eq!(again.status(), StatusCode::OK);
+    assert_eq!(tasks_titled(&fixture, "Take out the bins").await.len(), 2);
+}
+
+#[tokio::test]
+async fn recurrence_rules_are_validated_and_can_be_stopped() {
+    let fixture = Fixture::new().await;
+    let task = fixture.create_task("Water the plants").await;
+    for invalid in [
+        "FREQ=HOURLY",
+        "FREQ=DAILY;INTERVAL=0",
+        "FREQ=DAILY;BYDAY=MO",
+        "",
+    ] {
+        let response = patch_task(
+            &fixture,
+            &task["id"],
+            json!({"expected_version": 0, "recurrence": invalid}),
+        )
+        .await;
+        assert!(response.status().is_client_error(), "{invalid}");
+    }
+    let response = patch_task(
+        &fixture,
+        &task["id"],
+        json!({"expected_version": 0, "recurrence": "FREQ=DAILY;INTERVAL=3"}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let repeating = response_json(response).await;
+    assert_eq!(repeating["recurrence"], "FREQ=DAILY;INTERVAL=3");
+
+    let response = patch_task(
+        &fixture,
+        &task["id"],
+        json!({"expected_version": repeating["version"], "recurrence": null}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let stopped = response_json(response).await;
+    assert!(stopped["recurrence"].is_null());
+
+    let done = status_of_category(&fixture, "completed").await;
+    let response = patch_task(
+        &fixture,
+        &task["id"],
+        json!({"expected_version": stopped["version"], "status_id": done}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(tasks_titled(&fixture, "Water the plants").await.len(), 1);
+}
+
+#[tokio::test]
+async fn cancelling_ends_a_series_and_bulk_completion_repeats() {
+    let fixture = Fixture::new().await;
+    let cancelled = status_of_category(&fixture, "cancelled").await;
+    let done = status_of_category(&fixture, "completed").await;
+    let mut ids = Vec::new();
+    for title in ["Pay rent", "Change filters"] {
+        let task = fixture.create_task(title).await;
+        let response = patch_task(
+            &fixture,
+            &task["id"],
+            json!({"expected_version": 0, "recurrence": "FREQ=MONTHLY"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        ids.push(task["id"].clone());
+    }
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/workspaces/{}/tasks/bulk", fixture.workspace_id),
+            &fixture.owner_cookie,
+            json!({"updates":[
+                {"id": ids[0], "expected_version": 1, "status_id": done},
+                {"id": ids[1], "expected_version": 1, "status_id": cancelled}
+            ]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(tasks_titled(&fixture, "Pay rent").await.len(), 2);
+    assert_eq!(tasks_titled(&fixture, "Change filters").await.len(), 1);
+    // Without a due date the series counts from the completion.
+    let due: Option<i64> = sqlx::query_scalar(
+        "SELECT due_at FROM tasks WHERE title = 'Pay rent' AND recurrence_of IS NOT NULL",
+    )
+    .fetch_one(fixture.database.pool())
+    .await
+    .unwrap();
+    let days_ahead = (due.unwrap() - TimestampMillis::now().as_millis()) / 86_400_000;
+    assert!((27..=31).contains(&days_ahead), "{days_ahead}");
+}
+
+#[tokio::test]
+async fn the_next_occurrence_keeps_the_images_of_the_description() {
+    let fixture = Fixture::new().await;
+    let todo = status_of_category(&fixture, "unstarted").await;
+    let done = status_of_category(&fixture, "completed").await;
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/workspaces/{}/tasks", fixture.workspace_id),
+            &fixture.owner_cookie,
+            json!({"project_id": fixture.project_id, "status_id": todo,
+                "title": "Clean the filter", "recurrence": "FREQ=MONTHLY"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let first = response_json(response).await;
+    let first_id = first["id"].as_str().unwrap();
+    let (blob, reference) = (Id::new_v7().to_string(), Id::new_v7().to_string());
+    sqlx::query(
+        "INSERT INTO attachment_blobs (id, workspace_id, sha256, byte_size, storage_key, created_at, quarantine_until) \
+         VALUES ($1, $2, $1, 3, $1, 1, 1)",
+    )
+    .bind(&blob)
+    .bind(&fixture.workspace_id)
+    .execute(fixture.database.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO attachment_references (id, workspace_id, task_id, comment_id, owner_id, blob_id, \
+         display_name, media_type, byte_size, created_at, inline) \
+         VALUES ($1, $2, $3, NULL, $4, $5, 'filter.png', 'image/png', 3, 1, 1)",
+    )
+    .bind(&reference)
+    .bind(&fixture.workspace_id)
+    .bind(first_id)
+    .bind(fixture.owner_id.to_string())
+    .bind(&blob)
+    .execute(fixture.database.pool())
+    .await
+    .unwrap();
+    let url = |task: &str, reference: &str| {
+        format!(
+            "/api/v1/workspaces/{}/tasks/{task}/attachments/{reference}/download",
+            fixture.workspace_id
+        )
+    };
+    let response = patch_task(
+        &fixture,
+        &first["id"],
+        json!({"expected_version": first["version"], "description_json": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "Like this:", "styles": {}}]},
+            {"type": "image", "props": {"url": url(first_id, &reference)}}
+        ]}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let described = response_json(response).await;
+    assert_eq!(
+        described["description_json"][1]["props"]["url"],
+        url(first_id, &reference).as_str()
+    );
+
+    let response = patch_task(
+        &fixture,
+        &first["id"],
+        json!({"expected_version": described["version"], "status_id": done}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let (next_id, new_reference, new_blob): (String, String, String) = sqlx::query_as(
+        "SELECT tasks.id, attachment_references.id, attachment_references.blob_id FROM tasks \
+         JOIN attachment_references ON attachment_references.task_id = tasks.id \
+         WHERE tasks.recurrence_of = $1",
+    )
+    .bind(first_id)
+    .fetch_one(fixture.database.pool())
+    .await
+    .unwrap();
+    assert_eq!(new_blob, blob, "the stored file is shared");
+    assert_ne!(new_reference, reference);
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(cookie_request(
+            "GET",
+            &format!(
+                "/api/v1/workspaces/{}/tasks/{next_id}",
+                fixture.workspace_id
+            ),
+            &fixture.owner_cookie,
+        ))
+        .await
+        .unwrap();
+    let next = response_json(response).await;
+    assert_eq!(
+        next["description_json"][1]["props"]["url"],
+        url(&next_id, &new_reference).as_str()
+    );
+    assert!(
+        next["description"]
+            .as_str()
+            .unwrap()
+            .contains(&url(&next_id, &new_reference)),
+        "{next}"
     );
 }

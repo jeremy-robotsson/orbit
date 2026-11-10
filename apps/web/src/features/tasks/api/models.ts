@@ -106,6 +106,8 @@ export interface Task {
   attachments: Attachment[]
   dueStartAt?: string | null
   dueAt: string | null
+  /** Repeat rule (`FREQ=WEEKLY;INTERVAL=1`); completing the task creates the next occurrence. */
+  recurrence?: string | null
   createdAt: string
   updatedAt: string
   comments: TaskComment[]
@@ -320,6 +322,7 @@ export function taskFromRecord(
     attachments: attachments.filter((attachment) => !attachment.comment_id).map(attachmentView),
     dueStartAt: record.due_start_at ?? null,
     dueAt: record.due_at ?? null,
+    recurrence: record.recurrence ?? null,
     createdAt: record.created_at,
     updatedAt: record.updated_at,
     comments: comments.map((comment) => ({

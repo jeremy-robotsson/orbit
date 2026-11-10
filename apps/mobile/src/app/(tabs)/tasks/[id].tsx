@@ -15,6 +15,7 @@ import {
   MenuChoices,
   PeopleChoices,
   PriorityChoices,
+  RepeatChoices,
   SourceForm,
   StatusChoices,
   TaskChoices,
@@ -26,6 +27,7 @@ import { relativeAgo } from '../../../data/format'
 import { keys } from '../../../data/keys'
 import { markdownToText } from '../../../data/markdown'
 import { mentionedUserIds } from '../../../data/mentions'
+import { recurrenceLabel } from '../../../data/recurrence'
 import { linkTaskIdsInMarkdown } from '../../../data/taskIds'
 import * as api from '../../../data/orbit'
 import * as taskApi from '../../../data/task-api'
@@ -56,7 +58,7 @@ import { Avatar, Button, ErrorView, Icon, IconButton, type IconName, KeyboardSpa
 
 /** The one sheet of the page and what it shows. */
 type TaskSheet =
-  | { kind: 'status' | 'priority' | 'assignees' | 'labels' | 'due' | 'source' | 'parent-menu' | 'relation-menu' | 'attach' }
+  | { kind: 'status' | 'priority' | 'assignees' | 'labels' | 'due' | 'repeat' | 'source' | 'parent-menu' | 'relation-menu' | 'attach' }
   | { kind: 'pick-task'; purpose: 'parent' | 'sub-issue' | RelationKind }
 
 function sheetTitle(sheet: TaskSheet | null, subject: string): string {
@@ -72,6 +74,8 @@ function sheetTitle(sheet: TaskSheet | null, subject: string): string {
       return 'Labels'
     case 'due':
       return 'Due date'
+    case 'repeat':
+      return 'Repeat'
     case 'source':
       return 'Source'
     case 'parent-menu':
@@ -415,6 +419,14 @@ export default function TaskScreen() {
                 </Chip>
               </View>
             </PropertyGroup>
+            <PropertyGroup title="Repeat">
+              <View className="-ml-2 flex-row">
+                <Chip label={`Repeat: ${recurrenceLabel(current.recurrence)}`} onPress={() => sheets.open({ kind: 'repeat' })}>
+                  <Icon name="repeat" size={14} color={current.recurrence ? colors.foreground : colors.mutedForeground} />
+                  <ChipText muted={!current.recurrence}>{recurrenceLabel(current.recurrence)}</ChipText>
+                </Chip>
+              </View>
+            </PropertyGroup>
           </View>
 
           <View>
@@ -484,6 +496,15 @@ export default function TaskScreen() {
             onChange={(due) => {
               sheets.close()
               write.mutate({ due_at: due?.end ?? null, due_start_at: due?.start ?? null })
+            }}
+          />
+        ) : null}
+        {sheet?.kind === 'repeat' ? (
+          <RepeatChoices
+            value={current.recurrence}
+            onSelect={(rule) => {
+              sheets.close()
+              if (rule !== (current.recurrence ?? null)) write.mutate({ recurrence: rule })
             }}
           />
         ) : null}

@@ -1515,6 +1515,7 @@ impl AsanaImportService {
             due_start_at: start.map(TimestampMillis::from_millis),
             due_at: due_at.map(TimestampMillis::from_millis),
             parent_task_id: parent,
+            recurrence: None,
         })
     }
 

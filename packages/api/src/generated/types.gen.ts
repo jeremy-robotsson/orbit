@@ -719,6 +719,10 @@ export type BulkItem = {
     position?: number | null;
     priority?: string | null;
     project_id?: string | null;
+    /**
+     * Absent: unchanged. A repeat rule (`FREQ=WEEKLY;INTERVAL=2`): the task repeats. `null`: stop.
+     */
+    recurrence?: string | null;
     source_url?: string | null;
     status_id?: string | null;
     title?: string | null;
@@ -1678,6 +1682,11 @@ export type CreateTaskBody = {
     position?: number | null;
     priority?: string;
     project_id: string;
+    /**
+     * Repeat rule, e.g. `FREQ=WEEKLY;INTERVAL=2` (`DAILY`, `WEEKLY`, `MONTHLY`, `YEARLY`;
+     * interval 1 to 999). Completing the task creates its next occurrence.
+     */
+    recurrence?: string | null;
     source_url?: string | null;
     status_id: string;
     title: string;
@@ -3078,6 +3087,11 @@ export type ListPublicTask = {
          */
         priority: string;
         project_id: string;
+        /**
+         * How the task repeats: `FREQ=DAILY|WEEKLY|MONTHLY|YEARLY;INTERVAL=n`, or `null`.
+         * Completing a repeating task creates the next one and moves the rule to it.
+         */
+        recurrence: string | null;
         status_id: string;
         title: string;
         updated_at: string;
@@ -4681,6 +4695,15 @@ export type PageTaskRecord = {
         position: number;
         priority: string;
         project_id: string;
+        /**
+         * Repeat rule (`FREQ=DAILY|WEEKLY|MONTHLY|YEARLY;INTERVAL=n`); completing the task creates
+         * the next occurrence, which takes over the rule. Null for a one-off task.
+         */
+        recurrence?: string | null;
+        /**
+         * The occurrence this task was created from when its series moved on.
+         */
+        recurrence_of?: string | null;
         source_url?: string | null;
         status_id: string;
         /**
@@ -5013,6 +5036,12 @@ export type PublicCreateTaskBody = {
     priority?: string;
     project_id: string;
     /**
+     * Makes the task repeat: `FREQ=DAILY`, `WEEKLY`, `MONTHLY` or `YEARLY`, optionally with
+     * `;INTERVAL=n` (1 to 999), for example `FREQ=WEEKLY;INTERVAL=2`. Completing the task
+     * creates the next one, with its due dates moved to the next date of the series.
+     */
+    recurrence?: string | null;
+    /**
      * A status of the task's project.
      */
     status_id: string;
@@ -5253,6 +5282,11 @@ export type PublicTask = {
      */
     priority: string;
     project_id: string;
+    /**
+     * How the task repeats: `FREQ=DAILY|WEEKLY|MONTHLY|YEARLY;INTERVAL=n`, or `null`.
+     * Completing a repeating task creates the next one and moves the rule to it.
+     */
+    recurrence: string | null;
     status_id: string;
     title: string;
     updated_at: string;
@@ -5377,6 +5411,10 @@ export type PublicUpdateTaskBody = {
      * `none`, `low`, `medium`, `high` or `urgent`.
      */
     priority?: string | null;
+    /**
+     * A repeat rule as on create; `null` stops the task from repeating.
+     */
+    recurrence?: string | null;
     status_id?: string | null;
     /**
      * 1 to 500 characters.
@@ -6229,6 +6267,15 @@ export type TaskRecord = {
     position: number;
     priority: string;
     project_id: string;
+    /**
+     * Repeat rule (`FREQ=DAILY|WEEKLY|MONTHLY|YEARLY;INTERVAL=n`); completing the task creates
+     * the next occurrence, which takes over the rule. Null for a one-off task.
+     */
+    recurrence?: string | null;
+    /**
+     * The occurrence this task was created from when its series moved on.
+     */
+    recurrence_of?: string | null;
     source_url?: string | null;
     status_id: string;
     /**
@@ -6325,6 +6372,10 @@ export type TaskUpdateBody = {
     position?: number | null;
     priority?: string | null;
     project_id?: string | null;
+    /**
+     * Absent: unchanged. A repeat rule (`FREQ=WEEKLY;INTERVAL=2`): the task repeats. `null`: stop.
+     */
+    recurrence?: string | null;
     source_url?: string | null;
     status_id?: string | null;
     title?: string | null;

@@ -23,6 +23,7 @@ use super::databases::{
     write_database_data,
 };
 use super::pages::{PageKind, PageSpace, Remap, content_text, is_database, renumber, sibling_ids};
+use super::recurrence::Recurrence;
 use super::tasks::description_from_blocks;
 use super::teamspaces::teamspace_exists;
 use crate::audit::{self, AuditOutcome};
@@ -693,7 +694,7 @@ impl BackupItemRepository {
             optional_columns(
                 reader,
                 "tasks",
-                &["due_at", "due_start_at", "description_json"],
+                &["due_at", "due_start_at", "description_json", "recurrence"],
             )
             .await?,
         );
@@ -770,6 +771,10 @@ impl BackupItemRepository {
             due_start_at: task
                 .get("due_start_at")
                 .and_then(|value| value.parse().ok()),
+            recurrence: task
+                .get("recurrence")
+                .and_then(Recurrence::parse)
+                .map(Recurrence::to_rule),
             status_name,
             label_names,
             assignees,
@@ -931,8 +936,9 @@ impl BackupItemRepository {
             .filter(|start| task.due_at.is_some_and(|end| *start <= end));
         sqlx::query(
             "INSERT INTO tasks (id, workspace_id, project_id, status_id, title, description, priority, \
-             position, creator_id, due_start_at, due_at, version, created_at, updated_at, description_json) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0, $12, $13, $14)",
+             position, creator_id, due_start_at, due_at, version, created_at, updated_at, description_json, \
+             recurrence) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0, $12, $13, $14, $15)",
         )
         .bind(new_id.to_string())
         .bind(workspace_id.to_string())
@@ -948,6 +954,7 @@ impl BackupItemRepository {
         .bind(now.as_millis())
         .bind(now.as_millis())
         .bind(description_json)
+        .bind(task.recurrence.clone())
         .execute(&mut *tx)
         .await?;
         for user_id in &task.assignees {
@@ -1078,6 +1085,7 @@ struct SnapshotTask {
     priority: String,
     due_at: Option<i64>,
     due_start_at: Option<i64>,
+    recurrence: Option<String>,
     status_name: Option<String>,
     label_names: Vec<String>,
     assignees: Vec<String>,

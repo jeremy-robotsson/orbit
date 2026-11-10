@@ -12,6 +12,7 @@ use super::billing::{TrialCapacityError, TrialLimitReached, ensure_trial_capacit
 use super::membership;
 use super::page_mentions::mentioned_users;
 use super::pages::revision;
+use super::recurrence::{self, Recurrence};
 use super::sub_issues::{self, AutoClosed};
 use super::task_filter::{self, FilterError, FilterGroup, ShowCompleted, SubIssuesDisplay};
 use super::task_relations::{self, RelationActor};
@@ -151,6 +152,12 @@ pub struct TaskRecord {
     pub due_start_at: Option<TimestampMillis>,
     #[schema(value_type = Option<String>, format = DateTime)]
     pub due_at: Option<TimestampMillis>,
+    /// Repeat rule (`FREQ=DAILY|WEEKLY|MONTHLY|YEARLY;INTERVAL=n`); completing the task creates
+    /// the next occurrence, which takes over the rule. Null for a one-off task.
+    pub recurrence: Option<String>,
+    /// The occurrence this task was created from when its series moved on.
+    #[schema(value_type = Option<String>)]
+    pub recurrence_of: Option<Id>,
     pub version: u64,
     #[schema(value_type = Option<String>, format = DateTime)]
     pub deleted_at: Option<TimestampMillis>,
@@ -306,6 +313,7 @@ pub struct CreateTask {
     pub due_start_at: Option<TimestampMillis>,
     pub due_at: Option<TimestampMillis>,
     pub parent_task_id: Option<Id>,
+    pub recurrence: Option<Recurrence>,
 }
 
 /// How `insert_task` creates a task: as a person does (notifications, sub-issue automation), or
@@ -371,6 +379,8 @@ pub struct TaskChanges {
     pub duplicate_of_id: Option<Option<Id>>,
     /// `Some(Some(id))` makes the task a sub-issue of `id`; `Some(None)` detaches it.
     pub parent_task_id: Option<Option<Id>>,
+    /// `Some(Some(rule))` makes the task repeat; `Some(None)` stops it.
+    pub recurrence: Option<Option<Recurrence>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1950,6 +1960,37 @@ impl TaskRepository {
         request_id: &str,
         now: TimestampMillis,
     ) -> Result<TaskUpdateOutcome, TaskError> {
+        let mut tx = self.database.immediate_transaction().await?;
+        let outcome = self
+            .insert_task_in_tx(
+                &mut tx,
+                id,
+                workspace_id,
+                actor_id,
+                input,
+                mode,
+                request_id,
+                now,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(outcome)
+    }
+
+    /// `insert_task` in the caller's transaction (the next occurrence of a recurring task is
+    /// created by the write that completes the current one).
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_task_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Any>,
+        id: Id,
+        workspace_id: Id,
+        actor_id: Id,
+        input: CreateTask,
+        mode: CreateMode,
+        request_id: &str,
+        now: TimestampMillis,
+    ) -> Result<TaskUpdateOutcome, TaskError> {
         let interactive = matches!(mode, CreateMode::Interactive);
         if input
             .due_start_at
@@ -1959,8 +2000,7 @@ impl TaskRepository {
                 field: "due_start_at",
             });
         }
-        let mut tx = self.database.immediate_transaction().await?;
-        require_access_tx(&mut tx, workspace_id, actor_id).await?;
+        require_access_tx(tx, workspace_id, actor_id).await?;
         if self
             .project_grant
             .as_ref()
@@ -1970,20 +2010,20 @@ impl TaskRepository {
         }
         // The new sub-issue joins its parent's tree, which task automation can change.
         if let Some(parent_id) = input.parent_task_id {
-            self.check_project_grant(&mut tx, workspace_id, parent_id)
+            self.check_project_grant(tx, workspace_id, parent_id)
                 .await?;
         }
-        ensure_trial_capacity(&self.database, &mut tx, workspace_id, TrialLimit::Tasks, 1).await?;
-        validate_project_status(&mut tx, workspace_id, input.project_id, input.status_id).await?;
-        if task_relations::status_category_in_tx(&mut tx, workspace_id, input.status_id).await?
+        ensure_trial_capacity(&self.database, tx, workspace_id, TrialLimit::Tasks, 1).await?;
+        validate_project_status(tx, workspace_id, input.project_id, input.status_id).await?;
+        if task_relations::status_category_in_tx(tx, workspace_id, input.status_id).await?
             == task_relations::DUPLICATE
         {
             return Err(TaskError::Invalid { field: "status_id" });
         }
-        validate_assignees(&mut tx, workspace_id, &input.assignee_ids).await?;
-        validate_labels(&mut tx, workspace_id, input.project_id, &input.label_ids).await?;
+        validate_assignees(tx, workspace_id, &input.assignee_ids).await?;
+        validate_labels(tx, workspace_id, input.project_id, &input.label_ids).await?;
         if let Some(parent_id) = input.parent_task_id {
-            sub_issues::validate_parent_in_tx(&mut tx, workspace_id, None, parent_id).await?;
+            sub_issues::validate_parent_in_tx(tx, workspace_id, None, parent_id).await?;
         }
         let position = match input.position {
             Some(position) => position,
@@ -1993,7 +2033,7 @@ impl TaskRepository {
             .bind(workspace_id.to_string())
             .bind(input.project_id.to_string())
             .bind(input.status_id.to_string())
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?,
         };
         // A markdown description stays markdown until the description is first opened.
@@ -2005,7 +2045,7 @@ impl TaskRepository {
             // markdown (API, MCP, chat): converted now, so its mentions notify like typed ones
             None if input.description.trim().is_empty() => (input.description.clone(), None),
             None => {
-                let members = members(&mut *tx, workspace_id).await?;
+                let members = members(&mut **tx, workspace_id).await?;
                 let blocks = sanitize_blocks_for(
                     &markdown_to_blocks(&input.description, &members),
                     &task_policy(workspace_id, id),
@@ -2021,9 +2061,9 @@ impl TaskRepository {
             CreateMode::Interactive => None,
         };
         sqlx::query(
-            "INSERT INTO tasks (id, workspace_id, project_id, status_id, title, description, source_url, priority, position, creator_id, due_start_at, due_at, parent_task_id, version, created_at, updated_at, description_json, creator_service_account_id, completed_at) \
+            "INSERT INTO tasks (id, workspace_id, project_id, status_id, title, description, source_url, priority, position, creator_id, due_start_at, due_at, parent_task_id, version, created_at, updated_at, description_json, creator_service_account_id, completed_at, recurrence) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, $14, $15, $16, $17, \
-             CASE WHEN EXISTS (SELECT 1 FROM task_statuses WHERE id = $18 AND category IN ('completed', 'cancelled')) THEN $19 END)",
+             CASE WHEN EXISTS (SELECT 1 FROM task_statuses WHERE id = $18 AND category IN ('completed', 'cancelled')) THEN $19 END, $20)",
         )
         .bind(id.to_string())
         .bind(workspace_id.to_string())
@@ -2044,19 +2084,19 @@ impl TaskRepository {
         .bind(self.service_account().map(|(id, _)| id.to_string()))
         .bind(input.status_id.to_string())
         .bind(completed_at.map(TimestampMillis::as_millis))
-        .execute(&mut *tx)
+        .bind(input.recurrence.map(Recurrence::to_rule))
+        .execute(&mut **tx)
         .await?;
-        replace_assignees(&mut tx, id, &input.assignee_ids).await?;
+        replace_assignees(tx, id, &input.assignee_ids).await?;
         let notifies = interactive && self.notifies();
         if let Some(blocks) = blocks.as_ref().filter(|_| notifies) {
             // everyone the new description mentions is newly mentioned
-            notify_description_mentions(&mut tx, workspace_id, id, &[], blocks, actor_id, now)
-                .await?;
+            notify_description_mentions(tx, workspace_id, id, &[], blocks, actor_id, now).await?;
         }
-        replace_labels(&mut tx, id, &input.label_ids).await?;
+        replace_labels(tx, id, &input.label_ids).await?;
         if notifies {
             notify_users(
-                &mut tx,
+                tx,
                 workspace_id,
                 actor_id,
                 NotificationRequest {
@@ -2070,7 +2110,7 @@ impl TaskRepository {
             .await?;
         }
         self.record_write(
-            &mut tx,
+            tx,
             workspace_id,
             actor_id,
             ("task.created", "task"),
@@ -2090,11 +2130,9 @@ impl TaskRepository {
                 request_id,
                 now,
             };
-            sub_issues::close_ancestors_in_tx(&mut tx, actor, parent_id, id, &mut auto_closed)
-                .await?;
+            sub_issues::close_ancestors_in_tx(tx, actor, parent_id, id, &mut auto_closed).await?;
         }
-        let task = task_in_tx(&mut tx, workspace_id, id, false).await?;
-        tx.commit().await?;
+        let task = task_in_tx(tx, workspace_id, id, false).await?;
         Ok(TaskUpdateOutcome { task, auto_closed })
     }
 
@@ -2505,6 +2543,142 @@ impl TaskRepository {
         Ok((task, true))
     }
 
+    /// Creates the next occurrence of `task_id` when it repeats and this write moved it into a
+    /// completed status from `status_before` (`None`: the automation closed an open task). The
+    /// rule moves to the new task; see `recurrence`.
+    #[allow(clippy::too_many_arguments)]
+    async fn recur_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Any>,
+        workspace_id: Id,
+        actor_id: Id,
+        task_id: Id,
+        status_before: Option<Id>,
+        request_id: &str,
+        now: TimestampMillis,
+    ) -> Result<(), TaskError> {
+        let task = task_in_tx(tx, workspace_id, task_id, false).await?;
+        let completed = StatusCategory::Completed.as_str();
+        if task.recurrence.is_none()
+            || task_relations::status_category_in_tx(tx, workspace_id, task.status_id).await?
+                != completed
+        {
+            return Ok(());
+        }
+        // The next occurrence goes back to the open status the task was completed from (Todo),
+        // when that one was not started yet.
+        let mut reuse_status = None;
+        if let Some(status_id) = status_before {
+            let category =
+                task_relations::status_category_in_tx(tx, workspace_id, status_id).await?;
+            if category == completed {
+                return Ok(());
+            }
+            if category == StatusCategory::Unstarted.as_str() && status_id != task.status_id {
+                reuse_status = Some(status_id);
+            }
+        }
+        let Some(next) = recurrence::next_occurrence_in_tx(tx, &task, reuse_status, now).await?
+        else {
+            return Ok(());
+        };
+        let next_id = Id::new_v7();
+        // A description only shows its own task's files: images in it are shared with the new
+        // task under new references (the stored blob is kept while any reference holds it).
+        let images = sqlx::query(
+            "SELECT id, blob_id, display_name, media_type, byte_size FROM attachment_references \
+             WHERE workspace_id = $1 AND task_id = $2 AND comment_id IS NULL AND inline = 1 \
+             ORDER BY created_at, id",
+        )
+        .bind(workspace_id.to_string())
+        .bind(task_id.to_string())
+        .fetch_all(&mut **tx)
+        .await?;
+        let mut description = task.description.clone();
+        let mut description_json = task
+            .description_json
+            .as_ref()
+            .map(|blocks| Value::Array(blocks.clone()).to_string());
+        let mut copies = Vec::with_capacity(images.len());
+        for row in &images {
+            let old_reference: String = row.get("id");
+            let new_reference = Id::new_v7();
+            let from = format!("/tasks/{task_id}/attachments/{old_reference}/");
+            let to = format!("/tasks/{next_id}/attachments/{new_reference}/");
+            description = description.replace(&from, &to);
+            description_json = description_json.map(|json| json.replace(&from, &to));
+            copies.push((new_reference, row));
+        }
+        let description_json = match description_json {
+            Some(json) => match serde_json::from_str(&json) {
+                Ok(Value::Array(blocks)) => Some(blocks),
+                _ => task.description_json.clone(),
+            },
+            None => None,
+        };
+        let input = CreateTask {
+            project_id: task.project_id,
+            status_id: next.status_id,
+            title: task.title.clone(),
+            description,
+            description_json,
+            source_url: None,
+            priority: task.priority.clone(),
+            position: None,
+            assignee_ids: task.assignee_ids.clone(),
+            label_ids: task.label_ids.clone(),
+            due_start_at: next.due_start_at,
+            due_at: next.due_at,
+            parent_task_id: None,
+            recurrence: Some(next.recurrence),
+        };
+        self.insert_task_in_tx(
+            tx,
+            next_id,
+            workspace_id,
+            actor_id,
+            input,
+            CreateMode::Interactive,
+            request_id,
+            now,
+        )
+        .await?;
+        for (reference, row) in copies {
+            sqlx::query(
+                "INSERT INTO attachment_references (id, workspace_id, task_id, comment_id, owner_id, \
+                 blob_id, display_name, media_type, byte_size, created_at, inline) \
+                 VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, 1)",
+            )
+            .bind(reference.to_string())
+            .bind(workspace_id.to_string())
+            .bind(next_id.to_string())
+            .bind(actor_id.to_string())
+            .bind(row.get::<String, _>("blob_id"))
+            .bind(row.get::<String, _>("display_name"))
+            .bind(row.get::<String, _>("media_type"))
+            .bind(row.get::<i64, _>("byte_size"))
+            .bind(now.as_millis())
+            .execute(&mut **tx)
+            .await?;
+        }
+        sqlx::query("UPDATE tasks SET recurrence_of = $1 WHERE id = $2 AND workspace_id = $3")
+            .bind(task_id.to_string())
+            .bind(next_id.to_string())
+            .bind(workspace_id.to_string())
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query(
+            "UPDATE tasks SET recurrence = NULL, version = version + 1, updated_at = $1 \
+             WHERE id = $2 AND workspace_id = $3",
+        )
+        .bind(now.as_millis())
+        .bind(task_id.to_string())
+        .bind(workspace_id.to_string())
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
     pub async fn update_task(
         &self,
         workspace_id: Id,
@@ -2580,6 +2754,28 @@ impl TaskRepository {
                 &before,
                 &after,
                 &mut auto_closed,
+            )
+            .await?;
+        }
+        self.recur_in_tx(
+            &mut tx,
+            workspace_id,
+            actor_id,
+            update.id,
+            Some(task_before.status_id),
+            request_id,
+            now,
+        )
+        .await?;
+        for closed in &auto_closed {
+            self.recur_in_tx(
+                &mut tx,
+                workspace_id,
+                actor_id,
+                closed.id,
+                None,
+                request_id,
+                now,
             )
             .await?;
         }
@@ -2717,9 +2913,11 @@ impl TaskRepository {
         // Each item's before/after pair brackets its own write only; the automation runs after
         // every write, so its result never depends on the order of the items.
         let mut snapshots = Vec::with_capacity(updates.len());
+        let mut statuses_before = Vec::with_capacity(updates.len());
         for update in updates {
             let before = sub_issues::snapshot_in_tx(&mut tx, update.id).await?;
             let task_before = task_in_tx(&mut tx, workspace_id, update.id, false).await?;
+            statuses_before.push(task_before.status_id);
             let blocks = update_task_in_tx(
                 &mut tx,
                 workspace_id,
@@ -2785,6 +2983,30 @@ impl TaskRepository {
                 )
                 .await?;
             }
+        }
+        for (update, &status_before) in updates.iter().zip(&statuses_before) {
+            self.recur_in_tx(
+                &mut tx,
+                workspace_id,
+                actor_id,
+                update.id,
+                Some(status_before),
+                request_id,
+                now,
+            )
+            .await?;
+        }
+        for closed in &auto_closed {
+            self.recur_in_tx(
+                &mut tx,
+                workspace_id,
+                actor_id,
+                closed.id,
+                None,
+                request_id,
+                now,
+            )
+            .await?;
         }
         let mut tasks = Vec::with_capacity(updates.len());
         for update in updates {
@@ -3837,8 +4059,12 @@ pub(super) async fn update_task_in_tx(
     // A project move clears `number`; the `tasks_number_project_change` trigger assigns the
     // target project's next one (clearing it here keeps the old number from colliding there)
     // and keeps the old identifier in `task_number_aliases`.
-    sqlx::query("UPDATE tasks SET project_id = $1, number = CASE WHEN project_id = $2 THEN number ELSE NULL END, status_id = $3, title = $4, description = $5, source_url = $6, priority = $7, position = $8, due_start_at = $9, due_at = $10, parent_task_id = $11, version = version + 1, updated_at = $12 WHERE id = $13 AND workspace_id = $14 AND deleted_at IS NULL AND version = $15")
-        .bind(project_id.to_string()).bind(project_id.to_string()).bind(status_id.to_string()).bind(&title).bind(&description).bind(&source_url).bind(&priority).bind(position).bind(due_start_at.map(TimestampMillis::as_millis)).bind(due_at.map(TimestampMillis::as_millis)).bind(parent_task_id.map(|id| id.to_string())).bind(now.as_millis()).bind(update.id.to_string()).bind(workspace_id.to_string()).bind(update.expected_version as i64).execute(&mut **tx).await?;
+    let recurrence = match update.changes.recurrence {
+        Some(rule) => rule.map(Recurrence::to_rule),
+        None => current.recurrence.clone(),
+    };
+    sqlx::query("UPDATE tasks SET project_id = $1, number = CASE WHEN project_id = $2 THEN number ELSE NULL END, status_id = $3, title = $4, description = $5, source_url = $6, priority = $7, position = $8, due_start_at = $9, due_at = $10, parent_task_id = $11, version = version + 1, updated_at = $12, recurrence = $16 WHERE id = $13 AND workspace_id = $14 AND deleted_at IS NULL AND version = $15")
+        .bind(project_id.to_string()).bind(project_id.to_string()).bind(status_id.to_string()).bind(&title).bind(&description).bind(&source_url).bind(&priority).bind(position).bind(due_start_at.map(TimestampMillis::as_millis)).bind(due_at.map(TimestampMillis::as_millis)).bind(parent_task_id.map(|id| id.to_string())).bind(now.as_millis()).bind(update.id.to_string()).bind(workspace_id.to_string()).bind(update.expected_version as i64).bind(recurrence).execute(&mut **tx).await?;
     if parent_task_id != current.parent_task_id {
         // Project ids let the activity feed build cross-project identifiers (ORB-91C0). A hidden
         // old parent (trashed, or in a trashed project) has no `current.parent`, so read its
@@ -4540,6 +4766,12 @@ fn updated_fields(update: &TaskUpdate, before: &TaskRecord, after: &TaskRecord) 
     if before.source_url != after.source_url {
         changes.insert("source_url".into(), json!(true));
     }
+    if update.changes.recurrence.is_some() && before.recurrence != after.recurrence {
+        changes.insert(
+            "recurrence".into(),
+            json!({ "from": before.recurrence, "to": after.recurrence }),
+        );
+    }
     Value::Object(changes)
 }
 
@@ -5194,7 +5426,7 @@ fn task_columns(backend: Backend, rich: bool) -> String {
          tasks.source_url, tasks.priority, tasks.position, tasks.creator_id, \
          tasks.creator_service_account_id, \
          (SELECT name FROM service_accounts WHERE id = tasks.creator_service_account_id) AS creator_service_account_name, \
-         tasks.due_start_at, tasks.due_at, tasks.version, tasks.deleted_at, tasks.created_at, tasks.updated_at, \
+         tasks.due_start_at, tasks.due_at, tasks.recurrence, tasks.recurrence_of, tasks.version, tasks.deleted_at, tasks.created_at, tasks.updated_at, \
          {} AS duplicate_of_json, \
          EXISTS (SELECT 1 FROM task_relations AS blocker_relation \
                  JOIN tasks AS blocker ON blocker.id = blocker_relation.task_id \
@@ -5297,6 +5529,8 @@ fn task_record_from_row(
         due_at: row
             .get::<Option<i64>, _>("due_at")
             .map(TimestampMillis::from_millis),
+        recurrence: row.get("recurrence"),
+        recurrence_of: optional_id(row.get("recurrence_of"))?,
         version: parse_version(row.get("version"))?,
         deleted_at: row
             .get::<Option<i64>, _>("deleted_at")

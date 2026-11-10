@@ -982,7 +982,8 @@ async fn a_task_restores_into_its_live_project_with_status_labels_and_files_by_n
                 "status_id": fixture.status_id(&fixture.project_id, "In Progress").await,
                 "label_ids": [bug["id"]],
                 "assignee_ids": [fixture.owner_id, member],
-                "due_at": "2026-12-01T00:00:00Z"
+                "due_at": "2026-12-01T00:00:00Z",
+                "recurrence": "FREQ=WEEKLY;INTERVAL=2"
             }),
         )
         .await;
@@ -1100,6 +1101,8 @@ async fn a_task_restores_into_its_live_project_with_status_labels_and_files_by_n
     assert_ne!(copy["label_ids"], json!([other["id"]]));
     assert_eq!(copy["assignee_ids"], json!([fixture.owner_id.to_string()]));
     assert_eq!(copy["due_at"], task["due_at"]);
+    assert_eq!(copy["recurrence"], "FREQ=WEEKLY;INTERVAL=2");
+    assert_eq!(copy["recurrence_of"], Value::Null);
     let (blob, original_blob): (String, String) = sqlx::query_as(
         "SELECT copy.blob_id, original.blob_id FROM attachment_references copy \
          JOIN attachment_references original ON original.task_id = $2 WHERE copy.task_id = $1",

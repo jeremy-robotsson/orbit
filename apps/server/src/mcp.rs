@@ -204,6 +204,9 @@ struct CreateArgs {
     /// Workspace member user IDs, from list_members or get_me.
     #[serde(default)]
     assignee_ids: Vec<String>,
+    /// Makes the task repeat: FREQ=DAILY, WEEKLY, MONTHLY or YEARLY, optionally with
+    /// ;INTERVAL=n (1 to 999), for example FREQ=WEEKLY;INTERVAL=2.
+    recurrence: Option<String>,
 }
 fn default_priority() -> String {
     "none".into()
@@ -224,6 +227,9 @@ struct UpdateArgs {
     /// Replaces the assignees with these member user IDs (from list_members or get_me); `[]`
     /// unassigns everyone.
     assignee_ids: Option<Vec<String>>,
+    /// A repeat rule as in create_task; `null` stops the task from repeating.
+    #[serde(default, deserialize_with = "present")]
+    recurrence: Option<Option<String>>,
 }
 /// A field that is present, `null` included: `null` clears the value, a missing field keeps it.
 fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
@@ -382,7 +388,7 @@ fn tools() -> Vec<Tool> {
     let mut tools = vec![
         write_definition::<CreateArgs>(
             "create_task",
-            "Create a task in an approved project. With parent_task_id, the task is a sub-issue of that task. assignee_ids takes member user IDs.",
+            "Create a task in an approved project. With parent_task_id, the task is a sub-issue of that task. assignee_ids takes member user IDs. recurrence makes it repeat: completing it creates the next one.",
             false,
         ),
         write_definition::<UpdateArgs>(
@@ -564,6 +570,7 @@ impl TaskTools {
                         parent_task_id,
                         due_start_at: None,
                         due_at: None,
+                        recurrence: a.recurrence,
                     })
                     .await
                 }
@@ -586,6 +593,7 @@ impl TaskTools {
                         priority: a.priority,
                         parent_task_id,
                         assignee_ids,
+                        recurrence: a.recurrence,
                         ..Default::default()
                     };
                     api.update_task(&a.task_id, a.expected_version, patch).await

@@ -18,6 +18,7 @@ use utoipa::{IntoParams, ToSchema};
 use crate::auth_routes::{CookieMode, request_session};
 use crate::repositories::billing::TrialLimitReached;
 use crate::repositories::identity::{AuthenticatedSession, IdentityRepository};
+use crate::repositories::recurrence::Recurrence;
 use crate::repositories::sub_issues::AutoClosed;
 use crate::repositories::task_filter::{
     self, Condition, FilterField, FilterGroup, FilterNode, FilterOperator, GroupOp, OrderBy,
@@ -1011,6 +1012,9 @@ struct CreateTaskBody {
     due_at: Option<TimestampMillis>,
     /// Create the task as a sub-issue of this task.
     parent_task_id: Option<String>,
+    /// Repeat rule, e.g. `FREQ=WEEKLY;INTERVAL=2` (`DAILY`, `WEEKLY`, `MONTHLY`, `YEARLY`;
+    /// interval 1 to 999). Completing the task creates its next occurrence.
+    recurrence: Option<String>,
 }
 
 #[derive(Clone, Deserialize, ToSchema)]
@@ -1043,6 +1047,9 @@ struct TaskUpdateBody {
     /// Absent: unchanged. A task id: make this task its sub-issue. `null`: detach.
     #[serde(default, deserialize_with = "deserialize_source_patch")]
     parent_task_id: Option<Option<String>>,
+    /// Absent: unchanged. A repeat rule (`FREQ=WEEKLY;INTERVAL=2`): the task repeats. `null`: stop.
+    #[serde(default, deserialize_with = "deserialize_source_patch")]
+    recurrence: Option<Option<String>>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1078,6 +1085,9 @@ struct BulkItem {
     /// Absent: unchanged. A task id: make this task its sub-issue. `null`: detach.
     #[serde(default, deserialize_with = "deserialize_source_patch")]
     parent_task_id: Option<Option<String>>,
+    /// Absent: unchanged. A repeat rule (`FREQ=WEEKLY;INTERVAL=2`): the task repeats. `null`: stop.
+    #[serde(default, deserialize_with = "deserialize_source_patch")]
+    recurrence: Option<Option<String>>,
 }
 
 #[utoipa::path(get, path = "/api/v1/workspaces/{workspace_id}/tasks", params(TaskQuery, ("workspace_id" = String, Path)), responses((status = 200, body = Page<crate::repositories::tasks::TaskRecord>)))]
@@ -1535,6 +1545,10 @@ async fn create_task(
         due_start_at: body.due_start_at,
         due_at: body.due_at,
         parent_task_id: optional_id(body.parent_task_id, &instance, request_id.as_ref())?,
+        recurrence: body
+            .recurrence
+            .map(|rule| recurrence(&rule, &instance, request_id.as_ref()))
+            .transpose()?,
     };
     state
         .tasks
@@ -1623,6 +1637,7 @@ async fn bulk_tasks(
                     due_at: item.due_at,
                     duplicate_of_id: item.duplicate_of_id,
                     parent_task_id: item.parent_task_id,
+                    recurrence: item.recurrence,
                 },
                 &instance,
                 request_id.as_ref(),
@@ -2199,6 +2214,14 @@ fn task_update(
                 .parent_task_id
                 .map(|value| optional_id(value, instance, request_id))
                 .transpose()?,
+            recurrence: body
+                .recurrence
+                .map(|value| {
+                    value
+                        .map(|rule| recurrence(&rule, instance, request_id))
+                        .transpose()
+                })
+                .transpose()?,
         },
     })
 }
@@ -2473,6 +2496,15 @@ fn priority(
     } else {
         Err(validation("priority", instance, request_id))
     }
+}
+
+/// A repeat rule in the supported RRULE subset (see `repositories::recurrence`).
+pub(crate) fn recurrence(
+    value: &str,
+    instance: &str,
+    request_id: Option<&Extension<RequestId>>,
+) -> Result<Recurrence, ApiError> {
+    Recurrence::parse(value).ok_or_else(|| validation("recurrence", instance, request_id))
 }
 
 pub(crate) fn validation(

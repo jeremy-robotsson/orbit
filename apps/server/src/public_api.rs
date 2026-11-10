@@ -686,6 +686,10 @@ struct CreateTaskBody {
     due_start_at: Option<TimestampMillis>,
     #[schema(value_type = Option<String>, format = DateTime)]
     due_at: Option<TimestampMillis>,
+    /// Makes the task repeat: `FREQ=DAILY`, `WEEKLY`, `MONTHLY` or `YEARLY`, optionally with
+    /// `;INTERVAL=n` (1 to 999), for example `FREQ=WEEKLY;INTERVAL=2`. Completing the task
+    /// creates the next one, with its due dates moved to the next date of the series.
+    recurrence: Option<String>,
 }
 
 fn default_priority() -> String {
@@ -721,6 +725,10 @@ struct UpdateTaskBody {
     #[serde(default, deserialize_with = "present")]
     #[schema(value_type = Option<String>, format = DateTime)]
     due_at: Option<Option<TimestampMillis>>,
+    /// A repeat rule as on create; `null` stops the task from repeating.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<String>)]
+    recurrence: Option<Option<String>>,
     /// A task in an approved project (a UUID or an identifier such as `ENG-12`) makes this task
     /// its sub-issue; `null` detaches it.
     #[serde(default, deserialize_with = "present")]
@@ -1132,6 +1140,7 @@ async fn create_task(
             parent_task_id: api.optional_task_id(body.parent_task_id.as_deref()).await?,
             due_start_at: body.due_start_at,
             due_at: body.due_at,
+            recurrence: body.recurrence,
         })
         .await
     }
@@ -1171,6 +1180,7 @@ async fn update_task(
             label_ids: body.label_ids,
             due_start_at: body.due_start_at,
             due_at: body.due_at,
+            recurrence: body.recurrence,
             parent_task_id: match body.parent_task_id {
                 Some(parent) => Some(api.optional_task_id(parent.as_deref()).await?),
                 None => None,

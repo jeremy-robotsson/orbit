@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from
 import { cn } from 'cn'
 import { useQueryClient } from '@tanstack/react-query'
 import { confirmAction } from '@/components/common/confirmAction'
-import { Add as Plus, ArrowLeft, Calendar, Hierarchy2, Link2, Tag, TaskSquare as SquareCheck, User as UserIcon, Xmark as X } from 'reicon-react'
+import { Add as Plus, ArrowLeft, Calendar, Hierarchy2, Link2, Repeat, Tag, TaskSquare as SquareCheck, User as UserIcon, Xmark as X } from 'reicon-react'
 import { Badge } from '@/components/ui/badge'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Tip } from '@/components/common/Tip'
@@ -49,6 +49,7 @@ import { Attachments } from '@/components/common/Attachments'
 import { ActivityFeed } from './ActivityFeed'
 import { TaskCommentComposer } from './TaskCommentComposer'
 import { LabelPicker, LabelPill } from './TaskLabels'
+import { RECURRENCE_OPTIONS, recurrenceLabel } from '@/features/tasks/recurrence'
 import { TaskDescriptionEditor, type TaskDescriptionHandle } from './TaskDescriptionEditor'
 import { TaskTextFields } from './TaskTextFields'
 
@@ -484,6 +485,32 @@ export function TaskDetail({ task, project, state, onClose, onOpenTask, onOpenPr
                   />
                 </PopoverContent>
               </Popover>
+            </PropertyGroup>
+
+            <PropertyGroup title="Repeat">
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <PropertyButton type="button" aria-label={`Repeat: ${recurrenceLabel(task.recurrence)}`} className={cn(!task.recurrence && 'text-muted-foreground')}>
+                      <Repeat className="size-3.5" aria-hidden="true" />
+                      {recurrenceLabel(task.recurrence)}
+                    </PropertyButton>
+                  }
+                />
+                <DropdownMenuContent className="w-auto min-w-45">
+                  {[{ rule: null, label: "Doesn't repeat" }, ...RECURRENCE_OPTIONS].map((option) => (
+                    <DropdownMenuItem
+                      key={option.rule ?? 'none'}
+                      className="data-selected:bg-accent data-selected:font-medium"
+                      data-selected={option.rule === (task.recurrence ?? null) || undefined}
+                      onClick={() => updateTask.mutate({ taskId: task.id, body: { expected_version: task.version, recurrence: option.rule } })}
+                    >
+                      {option.label}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+              {task.recurrence ? <p className="mt-1 text-xs text-muted-foreground">Completing it creates the next one.</p> : null}
             </PropertyGroup>
           </aside>
 

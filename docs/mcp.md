@@ -220,7 +220,7 @@ tasks or tasks in deleted projects. Copy `next_cursor` into the next request and
 keep the same project and search query.
 
 Task results include title, description, project/status IDs, priority,
-assignee/label IDs, due dates, timestamps, version (an opaque number that changes
+assignee/label IDs, due dates, the repeat rule (`recurrence`), timestamps, version (an opaque number that changes
 with every change, including live edits; pass it back unchanged), `parent_task_id`
 (`null` for a top-level task or a parent in an unapproved project), the identifier
 (`ENG-12`) and the task's URL in the web app. Embedded task relations
@@ -307,11 +307,13 @@ Service-account tokens support tasks only; docs and chat require a personal iden
 | Chat read | `list_conversations`, `list_messages`, `get_thread`, `search_messages` |
 
 Task create takes `project_id`, `status_id`, `title`, optional markdown `description`,
-`priority`, `parent_task_id` (creates a sub-issue) and `assignee_ids`. Task update takes `task_id`,
-`expected_version`, and optional title, description, status, priority, `assignee_ids` or
-`parent_task_id`: a task ID or identifier moves the task under that task, and `null` detaches it.
+`priority`, `parent_task_id` (creates a sub-issue), `assignee_ids` and `recurrence`. Task update
+takes `task_id`, `expected_version`, and optional title, description, status, priority,
+`assignee_ids`, `recurrence` or `parent_task_id`: a task ID or identifier moves the task under that task, and `null` detaches it.
 `assignee_ids` replaces the whole list with member user IDs from `list_members` or `get_me`, and
 `[]` unassigns everyone; to claim a task, send the current list plus your own `get_me` user ID.
+`recurrence` makes a task repeat (`FREQ=DAILY`, `WEEKLY`, `MONTHLY` or `YEARLY`, optionally with
+`;INTERVAL=n` from 1 to 999); completing it creates the next task of the series, and `null` stops it.
 `create_project` works only for a connection approved for all projects (choose all projects at
 consent, or when you create the token): a connection for chosen projects could not use the new
 project. `key` is the identifier prefix (1 to 20 letters, digits or underscores, unique in the

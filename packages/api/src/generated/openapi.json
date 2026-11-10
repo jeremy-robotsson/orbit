@@ -52250,6 +52250,13 @@
               "null"
             ]
           },
+          "recurrence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absent: unchanged. A repeat rule (`FREQ=WEEKLY;INTERVAL=2`): the task repeats. `null`: stop."
+          },
           "source_url": {
             "type": [
               "string",
@@ -54613,6 +54620,13 @@
           },
           "project_id": {
             "type": "string"
+          },
+          "recurrence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Repeat rule, e.g. `FREQ=WEEKLY;INTERVAL=2` (`DAILY`, `WEEKLY`, `MONTHLY`, `YEARLY`;\ninterval 1 to 999). Completing the task creates its next occurrence."
           },
           "source_url": {
             "type": [
@@ -58055,6 +58069,7 @@
                     "label_ids",
                     "due_start_at",
                     "due_at",
+                    "recurrence",
                     "created_at",
                     "updated_at",
                     "version"
@@ -58108,6 +58123,13 @@
                     },
                     "project_id": {
                       "type": "string"
+                    },
+                    "recurrence": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "How the task repeats: `FREQ=DAILY|WEEKLY|MONTHLY|YEARLY;INTERVAL=n`, or `null`.\nCompleting a repeating task creates the next one and moves the rule to it."
                     },
                     "status_id": {
                       "type": "string"
@@ -62248,6 +62270,20 @@
                 "project_id": {
                   "type": "string"
                 },
+                "recurrence": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Repeat rule (`FREQ=DAILY|WEEKLY|MONTHLY|YEARLY;INTERVAL=n`); completing the task creates\nthe next occurrence, which takes over the rule. Null for a one-off task."
+                },
+                "recurrence_of": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The occurrence this task was created from when its series moved on."
+                },
                 "source_url": {
                   "type": [
                     "string",
@@ -62960,6 +62996,13 @@
           "project_id": {
             "type": "string"
           },
+          "recurrence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Makes the task repeat: `FREQ=DAILY`, `WEEKLY`, `MONTHLY` or `YEARLY`, optionally with\n`;INTERVAL=n` (1 to 999), for example `FREQ=WEEKLY;INTERVAL=2`. Completing the task\ncreates the next one, with its due dates moved to the next date of the series."
+          },
           "status_id": {
             "type": "string",
             "description": "A status of the task's project."
@@ -63510,6 +63553,7 @@
               "label_ids",
               "due_start_at",
               "due_at",
+              "recurrence",
               "created_at",
               "updated_at",
               "version"
@@ -63563,6 +63607,13 @@
               },
               "project_id": {
                 "type": "string"
+              },
+              "recurrence": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "How the task repeats: `FREQ=DAILY|WEEKLY|MONTHLY|YEARLY;INTERVAL=n`, or `null`.\nCompleting a repeating task creates the next one and moves the rule to it."
               },
               "status_id": {
                 "type": "string"
@@ -63801,6 +63852,13 @@
               "null"
             ],
             "description": "`none`, `low`, `medium`, `high` or `urgent`."
+          },
+          "recurrence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A repeat rule as on create; `null` stops the task from repeating."
           },
           "status_id": {
             "type": [
@@ -66067,6 +66125,20 @@
           "project_id": {
             "type": "string"
           },
+          "recurrence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Repeat rule (`FREQ=DAILY|WEEKLY|MONTHLY|YEARLY;INTERVAL=n`); completing the task creates\nthe next occurrence, which takes over the rule. Null for a one-off task."
+          },
+          "recurrence_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The occurrence this task was created from when its series moved on."
+          },
           "source_url": {
             "type": [
               "string",
@@ -66315,6 +66387,13 @@
               "string",
               "null"
             ]
+          },
+          "recurrence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absent: unchanged. A repeat rule (`FREQ=WEEKLY;INTERVAL=2`): the task repeats. `null`: stop."
           },
           "source_url": {
             "type": [

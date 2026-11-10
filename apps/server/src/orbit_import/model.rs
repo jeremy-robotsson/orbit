@@ -138,6 +138,8 @@ pub struct Task {
     pub source_url: Option<String>,
     pub due_start_at: Option<String>,
     pub due_at: Option<String>,
+    /// Missing in archives from before recurring tasks.
+    pub recurrence: Option<String>,
     pub completed_at: Option<String>,
     #[serde(default)]
     pub created_at: String,

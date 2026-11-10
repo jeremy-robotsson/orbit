@@ -1767,6 +1767,7 @@ impl LinearImportService {
                 .and_then(parse_date_millis)
                 .map(TimestampMillis::from_millis),
             parent_task_id: parent,
+            recurrence: None,
         })
     }
 

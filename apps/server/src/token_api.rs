@@ -25,6 +25,7 @@ use crate::repositories::pages::{
     CreatePage, MarkdownContent, PageChanges, PageError, PageList, PageRecord, PageRepository,
     SpaceRequest, revision,
 };
+use crate::repositories::recurrence::Recurrence;
 use crate::repositories::task_filter::{
     Condition, FilterField, FilterGroup, FilterNode, FilterOperator, GroupOp, ShowCompleted,
     SubIssuesDisplay,
@@ -120,6 +121,10 @@ pub struct ReadTask {
     pub due_start_at: Option<TimestampMillis>,
     #[schema(value_type = Option<String>, format = DateTime, required = true)]
     pub due_at: Option<TimestampMillis>,
+    /// How the task repeats: `FREQ=DAILY|WEEKLY|MONTHLY|YEARLY;INTERVAL=n`, or `null`.
+    /// Completing a repeating task creates the next one and moves the rule to it.
+    #[schema(required = true)]
+    pub recurrence: Option<String>,
     #[schema(value_type = String, format = DateTime)]
     pub created_at: TimestampMillis,
     #[schema(value_type = String, format = DateTime)]
@@ -175,6 +180,7 @@ impl TaskView {
                 label_ids: task.label_ids,
                 due_start_at: task.due_start_at,
                 due_at: task.due_at,
+                recurrence: task.recurrence,
                 created_at: task.created_at,
                 updated_at: task.updated_at,
                 version: revision(task.version, task.updated_at),
@@ -287,6 +293,8 @@ pub struct NewTask {
     pub parent_task_id: Option<Id>,
     pub due_start_at: Option<TimestampMillis>,
     pub due_at: Option<TimestampMillis>,
+    /// A rule that [`Recurrence::parse`] reads.
+    pub recurrence: Option<String>,
 }
 
 /// A doc with its content also as Markdown, the format that doc writes take. `version` is the
@@ -375,6 +383,8 @@ pub struct TaskPatch {
     /// `Some(None)` clears the date.
     pub due_start_at: Option<Option<TimestampMillis>>,
     pub due_at: Option<Option<TimestampMillis>>,
+    /// `Some(None)` stops the task from repeating.
+    pub recurrence: Option<Option<String>>,
     /// `Some(None)` detaches the task from its parent.
     pub parent_task_id: Option<Option<Id>>,
 }
@@ -829,6 +839,7 @@ impl Authorized<'_> {
             Some(&input.description),
             Some(&input.priority),
         )?;
+        let recurrence = input.recurrence.as_deref().map(recurrence).transpose()?;
         if !self.approved(input.project_id) {
             return Err(TokenApiError::NotAvailable);
         }
@@ -852,6 +863,7 @@ impl Authorized<'_> {
                     due_start_at: input.due_start_at,
                     due_at: input.due_at,
                     parent_task_id: input.parent_task_id,
+                    recurrence,
                 },
                 self.request_id,
                 TimestampMillis::now(),
@@ -872,6 +884,10 @@ impl Authorized<'_> {
             patch.description.as_deref(),
             patch.priority.as_deref(),
         )?;
+        let recurrence = patch
+            .recurrence
+            .map(|rule| rule.as_deref().map(recurrence).transpose())
+            .transpose()?;
         let p = self.principal;
         let id = self.task_id(task_ref).await?;
         let outcome = self
@@ -892,6 +908,7 @@ impl Authorized<'_> {
                         due_start_at: patch.due_start_at,
                         due_at: patch.due_at,
                         parent_task_id: patch.parent_task_id,
+                        recurrence,
                         ..Default::default()
                     },
                 },
@@ -1303,6 +1320,12 @@ fn validate_task_input(
         ));
     }
     Ok(())
+}
+
+fn recurrence(rule: &str) -> Result<Recurrence> {
+    Recurrence::parse(rule).ok_or(TokenApiError::Invalid(
+        "A recurrence is FREQ=DAILY, WEEKLY, MONTHLY or YEARLY with an optional INTERVAL of 1 to 999",
+    ))
 }
 
 /// The limits of the web editor for the title and icon; content up to 200,000 bytes of Markdown.

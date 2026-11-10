@@ -203,7 +203,7 @@ A task:
   "id": "…", "project_id": "…", "number": 12, "status_id": "…",
   "title": "Fix login", "description": "Markdown text", "priority": "high",
   "assignee_ids": ["…"], "label_ids": ["…"],
-  "due_start_at": null, "due_at": null,
+  "due_start_at": null, "due_at": null, "recurrence": "FREQ=WEEKLY;INTERVAL=1",
   "created_at": "…", "updated_at": "…", "version": 4503599627370495,
   "parent_task_id": null,
   "identifier": "ENG-12",
@@ -215,6 +215,14 @@ A task:
 `url` is the task's page in the Orbit web app.
 
 `priority` is `none`, `low`, `medium`, `high` or `urgent`.
+
+`recurrence` is `null`, or how the task repeats: `FREQ=DAILY`, `FREQ=WEEKLY`,
+`FREQ=MONTHLY` or `FREQ=YEARLY` with `;INTERVAL=n` (1 to 999), for example
+`FREQ=WEEKLY;INTERVAL=2` for every two weeks. When a repeating task moves to a
+completed status, Orbit creates the next task of the series in its project: same
+title, description, priority, assignees and labels, with the due dates moved to
+the next date of the series that is still ahead. The rule moves to the new task,
+so the completed task no longer repeats. A cancelled task ends its series.
 
 `GET /workspaces/{workspace_id}/tasks`. Scope: `tasks:read`. Tasks in the approved projects, newest first,
 including completed tasks and sub-issues. Optional parameters: `project_id`,
@@ -242,7 +250,7 @@ curl -sS "$ORBIT_WS/tasks/ENG-12" -H "Authorization: Bearer $ORBIT_TOKEN"
 characters), and the optional `description` (Markdown, up to 50,000 bytes),
 `priority` (default `none`), `assignee_ids`, `label_ids`, `parent_task_id`,
 `due_start_at` and `due_at` (RFC 3339 times; `due_start_at` needs `due_at` and
-must not be after it).
+must not be after it) and `recurrence`.
 The assignees must be members of the workspace. The labels and the status must
 be in the task's project. The parent and all the tasks related to it must be in
 approved projects. `parent_task_id` takes a task UUID or an identifier such as `ENG-12`.
@@ -256,8 +264,8 @@ curl -sS "$ORBIT_WS/tasks" -H "Authorization: Bearer $ORBIT_TOKEN" \
 `PATCH /workspaces/{workspace_id}/tasks/{task}`. Scope: `tasks:write`. Response: `200` with the task. Body:
 `expected_version` (required, the `version` that you read), and the optional
 `title`, `description`, `status_id`, `priority`, `assignee_ids`, `label_ids`,
-`due_start_at`, `due_at` and `parent_task_id`. A list replaces the old list. A missing field keeps
-its value, `null` clears a due date, and `parent_task_id: null` detaches the task from its
+`due_start_at`, `due_at`, `recurrence` and `parent_task_id`. A list replaces the old list. A missing field keeps
+its value, `null` clears a due date or stops the task from repeating, and `parent_task_id: null` detaches the task from its
 parent (a new parent is a task UUID or an identifier such as `ENG-12`). A new parent and all the tasks related to it must be in approved projects. If the task changed after you read it, the
 response is `409`. This includes edits that people make to the description in
 the editor. Read the task again, then try again. All the tasks in the

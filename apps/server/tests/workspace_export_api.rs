@@ -374,6 +374,11 @@ async fn an_owner_exports_tasks_pages_chat_and_files_and_downloads_one_zip() {
     let stranger = harness.add_user("sam@example.com", "Sam", None).await;
 
     let task_id = harness.create_task("Ship the export").await;
+    sqlx::query("UPDATE tasks SET recurrence = 'FREQ=MONTHLY;INTERVAL=1' WHERE id = $1")
+        .bind(&task_id)
+        .execute(harness.database.pool())
+        .await
+        .unwrap();
     harness
         .ok(
             &harness.owner,
@@ -528,6 +533,8 @@ async fn an_owner_exports_tasks_pages_chat_and_files_and_downloads_one_zip() {
         assert_eq!(task["key"], task_key.as_str());
         assert_eq!(task["deleted"], false);
         assert_eq!(task["creator"]["name"], "Owner");
+        assert_eq!(task["recurrence"], "FREQ=MONTHLY;INTERVAL=1");
+        assert_eq!(task["recurrence_of"], Value::Null);
         assert_eq!(task["comments"].as_array().unwrap().len(), 2);
         assert_eq!(task["comments"][0]["body"], "Looks **good**");
         assert_eq!(task["comments"][0]["author"]["name"], "Owner");

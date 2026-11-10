@@ -11,6 +11,7 @@ use super::model::{self, Task};
 use super::{Item, OrbitImportService, Run};
 use crate::notion::files::sanitize_file_name;
 use crate::notion::import::clamp;
+use crate::repositories::recurrence::Recurrence;
 use crate::repositories::task_relations::NewTaskRelationType;
 use crate::repositories::tasks::{CommentContent, CreateTask, TaskChanges, TaskError, TaskUpdate};
 use crate::repositories::teamspaces::TeamspaceError;
@@ -578,6 +579,7 @@ async fn create_task(
                 .and_then(parse_instant_millis)
                 .map(TimestampMillis::from_millis),
             parent_task_id: parent,
+            recurrence: task.recurrence.as_deref().and_then(Recurrence::parse),
         };
         let completed_at = task
             .completed_at

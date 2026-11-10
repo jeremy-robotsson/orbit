@@ -229,6 +229,7 @@ async fn create_task(
                 due_start_at: None,
                 due_at: None,
                 parent_task_id,
+                recurrence: None,
             },
             "test",
             TimestampMillis::now(),
@@ -372,6 +373,7 @@ async fn read_endpoints_return_public_fields_of_approved_projects_only() {
             "parent_task_id",
             "priority",
             "project_id",
+            "recurrence",
             "status_id",
             "title",
             "updated_at",
@@ -1489,6 +1491,97 @@ async fn due_dates_can_be_set_kept_and_cleared() {
         .call(Some(&token), "POST", "/tasks", Some(json!({"project_id": f.project, "status_id": status, "title": "Bad", "due_at": "tomorrow"})))
         .await;
     assert_eq!(code, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn recurrence_can_be_set_and_completing_creates_the_next_task() {
+    let f = Fixture::new().await;
+    let (token, _) = f.token(&[ApiTokenScope::TasksWrite], false).await;
+    let status = f.first_status(f.project).await;
+    let (code, task) = f
+        .call(
+            Some(&token),
+            "POST",
+            "/tasks",
+            Some(
+                json!({"project_id": f.project, "status_id": status, "title": "Water plants",
+                "due_at": "2099-03-01T09:00:00.000Z", "recurrence": "freq=weekly"}),
+            ),
+        )
+        .await;
+    assert_eq!(code, StatusCode::CREATED, "{task}");
+    assert_eq!(task["recurrence"], "FREQ=WEEKLY;INTERVAL=1");
+    let id = task["id"].as_str().unwrap().to_owned();
+
+    let done: String = sqlx::query_scalar(
+        "SELECT id FROM task_statuses WHERE project_id = $1 AND category = 'completed' \
+         ORDER BY position LIMIT 1",
+    )
+    .bind(f.project.to_string())
+    .fetch_one(f.database.pool())
+    .await
+    .unwrap();
+    let (code, completed) = f
+        .call(
+            Some(&token),
+            "PATCH",
+            &format!("/tasks/{id}"),
+            Some(json!({"expected_version": task["version"], "status_id": done})),
+        )
+        .await;
+    assert_eq!(code, StatusCode::OK, "{completed}");
+    assert_eq!(
+        completed["recurrence"],
+        Value::Null,
+        "the rule moves to the next task"
+    );
+    let (next_id, next_due, next_rule): (String, i64, Option<String>) =
+        sqlx::query_as("SELECT id, due_at, recurrence FROM tasks WHERE recurrence_of = $1")
+            .bind(&id)
+            .fetch_one(f.database.pool())
+            .await
+            .unwrap();
+    assert_eq!(next_rule.as_deref(), Some("FREQ=WEEKLY;INTERVAL=1"));
+    assert_eq!(next_due, 4_076_643_600_000, "2099-03-08T09:00:00Z");
+
+    let (code, next) = f
+        .call(Some(&token), "GET", &format!("/tasks/{next_id}"), None)
+        .await;
+    assert_eq!(code, StatusCode::OK, "{next}");
+    let (code, stopped) = f
+        .call(
+            Some(&token),
+            "PATCH",
+            &format!("/tasks/{next_id}"),
+            Some(json!({"expected_version": next["version"], "recurrence": null})),
+        )
+        .await;
+    assert_eq!(code, StatusCode::OK, "{stopped}");
+    assert_eq!(stopped["recurrence"], Value::Null);
+
+    for rule in [
+        "FREQ=HOURLY",
+        "FREQ=DAILY;INTERVAL=0",
+        "FREQ=DAILY;BYDAY=MO",
+        "",
+    ] {
+        let (code, problem) = f
+            .call(
+                Some(&token),
+                "POST",
+                "/tasks",
+                Some(
+                    json!({"project_id": f.project, "status_id": status, "title": "Bad",
+                    "recurrence": rule}),
+                ),
+            )
+            .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "{rule}: {problem}");
+        assert!(
+            problem["detail"].as_str().unwrap().contains("FREQ="),
+            "{problem}"
+        );
+    }
 }
 
 #[tokio::test]
